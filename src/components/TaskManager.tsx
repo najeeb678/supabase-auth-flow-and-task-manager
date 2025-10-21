@@ -21,6 +21,34 @@ export default function TaskManager({session}: {session: any}) {
     };
     fetchTasks();
   }, []);
+  useEffect(() => {
+    const channel = supabase.channel(`tasks-changes`).on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "tasks" },
+      (payload) => {
+        console.log("Change received!", payload);
+        if (payload.eventType === "INSERT") {
+          setTasks((prevTasks) => [payload.new as any, ...prevTasks]);
+        } else if (payload.eventType === "UPDATE") {
+          setTasks((prevTasks) =>
+            prevTasks.map((task) =>
+              task.id === (payload.new as any).id ? (payload.new as any) : task
+            )
+          );
+        } else if (payload.eventType === "DELETE") {
+          setTasks((prevTasks) =>
+            prevTasks.filter((task) => task.id !== (payload.old as any).id)
+          );
+        }
+      }
+    ).subscribe((status) => {
+      console.log("Subscription status:", status);
+    });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   // ✅ Add or Update Task
   const handleAddOrUpdateTask = async () => {
@@ -59,7 +87,7 @@ export default function TaskManager({session}: {session: any}) {
         return;
       }
 
-      setTasks([data, ...tasks]);
+      // setTasks([data, ...tasks]);
     }
 
     setTitle("");
@@ -127,9 +155,9 @@ export default function TaskManager({session}: {session: any}) {
         {tasks.length === 0 ? (
           <p className="text-center text-gray-500">No tasks added yet.</p>
         ) : (
-          tasks.map((task) => (
+          tasks.map((task, index) => (
             <div
-              key={task.id}
+              key={index}
               className="bg-gray-800 shadow-sm rounded-xl p-4 flex justify-between items-start border border-gray-700"
             >
               <div>
