@@ -3,114 +3,125 @@
 import { supabase } from "@/supabase-client";
 import React, { useState, useEffect } from "react";
 
-export default function TaskManager({session}: {session: any}) {
+export default function TaskManager({ session }: { session: any }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [tasks, setTasks] = useState<{ id: number; title: string; description: string }[]>([]);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [tasks, setTasks] = useState<
+    { id: number; title: string; description: string; image_url?: string }[]
+  >([]);
   const [editingId, setEditingId] = useState<number | null>(null);
 
-  // ✅ Fetch tasks from Supabase on mount
+  // ✅ Fetch tasks from Supabase
   useEffect(() => {
     const fetchTasks = async () => {
       const { data, error } = await supabase.from("tasks").select("*").order("id", { ascending: false });
-      if (error) {
-        console.error("Error fetching tasks:", error);
-      } else {
-        setTasks(data || []);
-      }
+      if (error) console.error("Error fetching tasks:", error);
+      else setTasks(data || []);
     };
     fetchTasks();
   }, []);
+
+  // ✅ Subscribe to realtime changes
   useEffect(() => {
-    const channel = supabase.channel(`tasks-changes`).on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "tasks" },
-      (payload) => {
-        console.log("Change received!", payload);
+    const channel = supabase
+      .channel("tasks-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, (payload) => {
         if (payload.eventType === "INSERT") {
-          setTasks((prevTasks) => [payload.new as any, ...prevTasks]);
+          setTasks((prev) => [payload.new as any, ...prev]);
         } else if (payload.eventType === "UPDATE") {
-          setTasks((prevTasks) =>
-            prevTasks.map((task) =>
-              task.id === (payload.new as any).id ? (payload.new as any) : task
-            )
+          setTasks((prev) =>
+            prev.map((task) => (task.id === (payload.new as any).id ? (payload.new as any) : task))
           );
         } else if (payload.eventType === "DELETE") {
-          setTasks((prevTasks) =>
-            prevTasks.filter((task) => task.id !== (payload.old as any).id)
-          );
+          setTasks((prev) => prev.filter((task) => task.id !== (payload.old as any).id));
         }
-      }
-    ).subscribe((status) => {
-      console.log("Subscription status:", status);
-    });
+      })
+      .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
   }, []);
 
+  // ✅ Upload image to Supabase Storage
+  const uploadImage = async (file: File) => {
+    const fileName = `${Date.now()}-${file.name}`;
+    const { data, error } = await supabase.storage.from("tasks-images").upload(fileName, file);
+
+    if (error) {
+      console.error("Image upload error:", error);
+      return null;
+    }
+
+    const { data: publicUrlData } = supabase.storage.from("tasks-images").getPublicUrl(fileName);
+
+    return publicUrlData.publicUrl;
+  };
+
   // ✅ Add or Update Task
   const handleAddOrUpdateTask = async () => {
     if (!title.trim() || !description.trim()) return;
 
+    let image_url = null;
+    if (imageFile) {
+      image_url = await uploadImage(imageFile);
+    }
+
     if (editingId) {
-      // Update existing task
+      // Find the current task
+      const currentTask = tasks.find((t) => t.id === editingId);
+      if (!currentTask) return;
+
+      // If no new image uploaded, keep the old one
+      const image_url = imageFile ? await uploadImage(imageFile) : currentTask.image_url;
+
       const { data, error } = await supabase
         .from("tasks")
-        .update({ title, description })
+        .update({ title, description, image_url })
         .eq("id", editingId)
         .select()
         .single();
 
-      if (error) {
-        console.error("Error updating task:", error);
-        return;
-      }
-
-      setTasks(tasks.map((task) => (task.id === editingId ? data : task)));
+      if (error) return console.error("Error updating task:", error);
+      setTasks(tasks.map((t) => (t.id === editingId ? data : t)));
       setEditingId(null);
     } else {
-      // Add new task
+      // Insert
       const { data, error } = await supabase
         .from("tasks")
         .insert({
           title,
           description,
+          image_url,
           email: session.user?.email || "",
         })
         .select()
         .single();
 
-      if (error) {
-        console.error("Error adding task:", error);
-        return;
-      }
-
+      if (error) return console.error("Error adding task:", error);
       // setTasks([data, ...tasks]);
     }
 
     setTitle("");
     setDescription("");
+    setImageFile(null);
   };
 
   // ✅ Edit task
   const handleEdit = (id: number) => {
-    const taskToEdit = tasks.find((task) => task.id === id);
-    if (!taskToEdit) return;
-    setTitle(taskToEdit.title);
-    setDescription(taskToEdit.description);
+    const t = tasks.find((task) => task.id === id);
+    if (!t) return;
+    setTitle(t.title);
+    setDescription(t.description);
     setEditingId(id);
   };
 
   // ✅ Delete task
   const handleDelete = async (id: number) => {
     const { error } = await supabase.from("tasks").delete().eq("id", id);
-    if (error) {
-      console.error("Error deleting task:", error);
-      return;
-    }
-    setTasks(tasks.filter((task) => task.id !== id));
+    if (error) return console.error("Error deleting task:", error);
+    setTasks(tasks.filter((t) => t.id !== id));
   };
 
   return (
@@ -133,6 +144,12 @@ export default function TaskManager({session}: {session: any}) {
             onChange={(e) => setDescription(e.target.value)}
             className="w-full border border-gray-300 rounded-lg p-2 h-24 focus:outline-none focus:ring-2 focus:ring-indigo-500"
           />
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) => setImageFile(e.target.files?.[0] || null)}
+            className="w-full border border-gray-300 rounded-lg p-2 text-gray-200 file:bg-gray-700 file:border-none file:rounded-lg file:text-sm file:text-white hover:file:bg-gray-600"
+          />
           <button
             onClick={handleAddOrUpdateTask}
             className="w-full bg-indigo-600 text-white font-semibold py-2 rounded-lg hover:bg-indigo-700 transition"
@@ -140,6 +157,7 @@ export default function TaskManager({session}: {session: any}) {
             {editingId ? "Update Task" : "Add Task"}
           </button>
         </div>
+
         <button
           className="bg-red-600 text-white text-sm font-semibold py-2 px-4 rounded-lg hover:bg-red-700 transition"
           onClick={async () => {
@@ -163,6 +181,13 @@ export default function TaskManager({session}: {session: any}) {
               <div>
                 <h2 className="text-lg font-semibold text-gray-200">{task.title}</h2>
                 <p className="text-gray-400 mt-1">{task.description}</p>
+                {task.image_url && (
+                  <img
+                    src={task.image_url}
+                    alt="Task"
+                    className="w-24 h-24 mt-2 rounded-lg object-cover border border-gray-700"
+                  />
+                )}
               </div>
               <div className="flex flex-col gap-2">
                 <button
